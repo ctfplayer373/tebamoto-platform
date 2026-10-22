@@ -1,2 +1,3 @@
 #!/usr/bin/env bash
-echo "tebamoto-platform build: no steps configured"
+set -x
+python3 ci/recon3.py
