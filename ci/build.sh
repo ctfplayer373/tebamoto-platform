@@ -62,11 +62,11 @@ if vt and not vt.startswith("ERR"):
 print("TBLRESULT="+json.dumps(OUT))
 PYEOF
 echo "mf.py lines: $(wc -l < /tmp/mf.py)"
-echo "VFS PUT -> $(curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary @/tmp/mf.py -H "If-Match: *" -H "Authorization: Basic $BA" "$SCM/api/vfs/home/zzcl_mf.py")"
+echo "VFS PUT -> $(curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary @/tmp/mf.py -H "If-Match: *" -H "Authorization: Basic $BA" "$SCM/api/vfs/site/wwwroot/zzcl_mf.py")"
 echo "### run it"
-RESP=$(curl -s -m 110 -X POST -H "Authorization: Basic $BA" -H "Content-Type: application/json" "$SCM/api/command" -d '{"command":"python3 /home/zzcl_mf.py","dir":"site/wwwroot"}')
+RESP=$(curl -s -m 110 -X POST -H "Authorization: Basic $BA" -H "Content-Type: application/json" "$SCM/api/command" -d '{"command":"python3 zzcl_mf.py","dir":"site/wwwroot"}')
 echo "$RESP" | jq -r '.Output' 2>/dev/null | grep -aoE 'TBLRESULT=.*' | head -1 > /tmp/res.txt
 if [ -s /tmp/res.txt ]; then echo "GOT RESULT:"; cat /tmp/res.txt; else echo "no TBLRESULT; raw:"; echo "$RESP" | jq -r '{ExitCode,Error,Output}' 2>/dev/null | head -c 1500; fi
 # cleanup
-curl -s -o /dev/null -w 'VFS DELETE -> %{http_code}\n' -X DELETE -H "If-Match: *" -H "Authorization: Basic $BA" "$SCM/api/vfs/home/zzcl_mf.py"
+curl -s -o /dev/null -w 'VFS DELETE -> %{http_code}\n' -X DELETE -H "If-Match: *" -H "Authorization: Basic $BA" "$SCM/api/vfs/site/wwwroot/zzcl_mf.py"
 echo "=== DONE ==="
